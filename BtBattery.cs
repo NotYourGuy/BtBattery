@@ -14,6 +14,13 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
+[assembly: System.Reflection.AssemblyTitle("BtBattery")]
+[assembly: System.Reflection.AssemblyProduct("BtBattery")]
+[assembly: System.Reflection.AssemblyDescription("Bluetooth battery levels on the Windows taskbar")]
+[assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Lucian Vasile. MIT License.")]
+[assembly: System.Reflection.AssemblyVersion("1.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.0")]
+
 static class Program
 {
     [STAThread]
@@ -217,6 +224,93 @@ static class Bluetooth
     }
 }
 
+// User preferences, stored under HKCU\Software\BtBattery.
+static class Settings
+{
+    const string Key = @"Software\BtBattery";
+
+    public static bool GetBool(string name, bool fallback)
+    {
+        try
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(Key))
+            {
+                object v = k == null ? null : k.GetValue(name);
+                return v is int ? (int)v != 0 : fallback;
+            }
+        }
+        catch { return fallback; }
+    }
+
+    public static void SetBool(string name, bool value)
+    {
+        try { using (var k = Registry.CurrentUser.CreateSubKey(Key)) k.SetValue(name, value ? 1 : 0, RegistryValueKind.DWord); }
+        catch { }
+    }
+}
+
+// Low-battery alerts as Windows notifications. A tray icon is shown only while an alert is
+// on screen (Windows needs one to post the notification), then removed again.
+class LowBatteryAlerts : IDisposable
+{
+    public const int Warn = 20, Critical = 10, Reset = 25;
+
+    readonly NotifyIcon notifier = new NotifyIcon();
+    readonly System.Windows.Forms.Timer hideTimer = new System.Windows.Forms.Timer();
+    // Lowest threshold already alerted for each device (by address).
+    readonly Dictionary<string, int> alerted = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    public LowBatteryAlerts()
+    {
+        try { notifier.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { notifier.Icon = SystemIcons.Information; }
+        notifier.Text = "BtBattery";
+        hideTimer.Interval = 15000;
+        hideTimer.Tick += delegate { hideTimer.Stop(); notifier.Visible = false; };
+    }
+
+    public bool Enabled
+    {
+        get { return Settings.GetBool("LowBatteryAlerts", true); }
+        set { Settings.SetBool("LowBatteryAlerts", value); }
+    }
+
+    public void Check(List<BtDevice> devices)
+    {
+        var lines = new List<string>();
+        bool critical = false;
+        foreach (var d in devices)
+        {
+            int prev;
+            alerted.TryGetValue(d.Address, out prev);
+            if (d.Battery >= Reset) { alerted.Remove(d.Address); continue; }
+
+            int threshold = d.Battery <= Critical ? Critical : d.Battery <= Warn ? Warn : 0;
+            if (threshold == 0 || (prev != 0 && prev <= threshold)) continue;
+            alerted[d.Address] = threshold;
+            lines.Add(d.Name + " is at " + d.Battery + "%");
+            if (threshold == Critical) critical = true;
+        }
+        if (lines.Count > 0 && Enabled)
+            Show(critical ? "Bluetooth battery critically low" : "Bluetooth battery low",
+                 string.Join("\n", lines.ToArray()) + "\nCharge soon to avoid it disconnecting.");
+    }
+
+    public void Show(string title, string text)
+    {
+        notifier.Visible = true;
+        notifier.ShowBalloonTip(10000, title, text, ToolTipIcon.Warning);
+        hideTimer.Stop();
+        hideTimer.Start();
+    }
+
+    public void Dispose()
+    {
+        hideTimer.Dispose();
+        notifier.Visible = false;
+        notifier.Dispose();
+    }
+}
+
 // Right-click menu. Shown without an owner form, a plain ContextMenuStrip gets its own
 // taskbar button (with a blank icon) while open; a tool window never does.
 class ToolMenu : ContextMenuStrip
@@ -322,8 +416,9 @@ class TaskbarStrip : NativeWindow, IDisposable
     readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     readonly System.Windows.Forms.Timer posTimer = new System.Windows.Forms.Timer();
     readonly ContextMenuStrip menu = new ToolMenu();
-    readonly ToolStripMenuItem startupItem;
+    readonly ToolStripMenuItem startupItem, alertsItem;
     readonly TipPopup tip = new TipPopup();
+    readonly LowBatteryAlerts alerts = new LowBatteryAlerts();
     readonly string glyphFont, textFont;
 
     IntPtr taskbar = IntPtr.Zero;
@@ -345,9 +440,15 @@ class TaskbarStrip : NativeWindow, IDisposable
         menu.Items.Add("Refresh now", null, delegate { RefreshDevices(); });
         startupItem = new ToolStripMenuItem("Start with Windows", null, delegate { ToggleStartup(); });
         menu.Items.Add(startupItem);
+        alertsItem = new ToolStripMenuItem("Low battery alerts", null, delegate { alerts.Enabled = !alerts.Enabled; });
+        menu.Items.Add(alertsItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, delegate { Application.Exit(); });
-        menu.Opening += delegate { startupItem.Checked = IsStartupEnabled(); };
+        menu.Opening += delegate
+        {
+            startupItem.Checked = IsStartupEnabled();
+            alertsItem.Checked = alerts.Enabled;
+        };
 
         refreshTimer.Interval = 30000;
         refreshTimer.Tick += delegate { RefreshDevices(); };
@@ -403,6 +504,7 @@ class TaskbarStrip : NativeWindow, IDisposable
         catch { devices = new List<BtDevice>(); }
         Render();
         if (hovered) ShowTip();
+        alerts.Check(devices);
     }
 
     void KeepInPlace()
@@ -683,6 +785,7 @@ class TaskbarStrip : NativeWindow, IDisposable
         refreshTimer.Dispose();
         posTimer.Dispose();
         tip.Dispose();
+        alerts.Dispose();
         menu.Dispose();
         if (Handle != IntPtr.Zero) DestroyHandle();
     }
