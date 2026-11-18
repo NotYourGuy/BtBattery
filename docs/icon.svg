@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2F8CFF"/>
+      <stop offset="1" stop-color="#0A5BD6"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- battery -->
+  <rect x="20" y="40" width="80" height="48" rx="10" fill="none" stroke="#fff" stroke-width="7"/>
+  <rect x="103" y="54" width="8" height="20" rx="3" fill="#fff"/>
+  <rect x="29" y="49" width="62" height="30" rx="4" fill="#fff"/>
+  <!-- Bluetooth rune -->
+  <path d="M52.5 56.5 L67.5 71.5 L60 79 L60 49 L67.5 56.5 L52.5 71.5"
+        fill="none" stroke="#0A5BD6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
