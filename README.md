@@ -40,14 +40,16 @@ Prefer to build from source? Download this repository, then double-click **`buil
 | Hover | Shows each device's name and battery level |
 | Left-click | Checks the levels right away (they also update every 30 seconds, and instantly when a device connects or disconnects) |
 | Double-click | Opens **Settings → Bluetooth & devices** |
-| Right-click | **Refresh now**, **Devices** (show/hide and reorder each device), **Bluetooth settings**, **Compact mode**, **Start with Windows**, **Low battery alerts** (on/off), **Exit** |
+| Right-click | **Refresh now**, **Devices** (show/hide and reorder each device), **Bluetooth settings**, **Compact mode**, **Start with Windows**, **Low battery alerts** (on/off), **Updates**, **Exit** |
 
 ## Good to know
 
 - Requires Windows 10 or 11.
 - Only devices that report their battery to Windows appear. If a device shows a percentage in **Settings → Bluetooth & devices**, it will show here too.
 - Levels come from Windows, which updates them every few minutes, so they can be slightly behind.
-- To uninstall, untick **Start with Windows**, choose **Exit**, then delete the folder.
+- Once a day the app asks GitHub whether a newer release exists, and tells you if so. Nothing is sent except a standard web request. Turn it off under **Updates → Check automatically**.
+- Settings are stored in the registry under `HKCU\Software\BtBattery`.
+- To uninstall, untick **Start with Windows**, choose **Exit**, then delete the folder (and optionally that registry key).
 
 ## License
 

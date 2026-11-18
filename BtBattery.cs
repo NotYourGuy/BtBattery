@@ -18,8 +18,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("BtBattery")]
 [assembly: System.Reflection.AssemblyDescription("Bluetooth battery levels on the Windows taskbar")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Lucian Vasile. MIT License.")]
-[assembly: System.Reflection.AssemblyVersion("1.6.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.0")]
+[assembly: System.Reflection.AssemblyVersion("1.7.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.7.0")]
 
 static class Program
 {
@@ -248,6 +248,18 @@ static class Settings
         catch { }
     }
 
+    public static string GetString(string name)
+    {
+        try { using (var k = Registry.CurrentUser.OpenSubKey(Key)) return k == null ? null : k.GetValue(name) as string; }
+        catch { return null; }
+    }
+
+    public static void SetString(string name, string value)
+    {
+        try { using (var k = Registry.CurrentUser.CreateSubKey(Key)) k.SetValue(name, value, RegistryValueKind.String); }
+        catch { }
+    }
+
     public static List<string> GetList(string name)
     {
         try
@@ -283,6 +295,10 @@ class LowBatteryAlerts : IDisposable
     {
         try { notifier.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { notifier.Icon = SystemIcons.Information; }
         notifier.Text = "BtBattery";
+        notifier.BalloonTipClicked += delegate
+        {
+            if (clickUrl != null) try { System.Diagnostics.Process.Start(clickUrl); } catch { }
+        };
         hideTimer.Interval = 15000;
         hideTimer.Tick += delegate { hideTimer.Stop(); notifier.Visible = false; };
     }
@@ -314,10 +330,16 @@ class LowBatteryAlerts : IDisposable
                  string.Join("\n", lines.ToArray()) + "\nCharge soon to avoid it disconnecting.");
     }
 
-    public void Show(string title, string text)
+    string clickUrl;
+
+    public void Show(string title, string text) { Show(title, text, ToolTipIcon.Warning, null); }
+
+    // Also used for update notices; url (optional) opens when the notification is clicked.
+    public void Show(string title, string text, ToolTipIcon icon, string url)
     {
+        clickUrl = url;
         notifier.Visible = true;
-        notifier.ShowBalloonTip(10000, title, text, ToolTipIcon.Warning);
+        notifier.ShowBalloonTip(10000, title, text, icon);
         hideTimer.Stop();
         hideTimer.Start();
     }
@@ -328,6 +350,119 @@ class LowBatteryAlerts : IDisposable
         notifier.Visible = false;
         notifier.Dispose();
     }
+}
+
+// Asks GitHub for the latest release (at most once a day, or on demand) and compares it with
+// this exe's version. The request runs on a worker thread; the UI picks up the result by polling.
+class UpdateChecker : IDisposable
+{
+    const string Api = "https://api.github.com/repos/NotYourGuy/BtBattery/releases/latest";
+    public const string ReleasesPage = "https://github.com/NotYourGuy/BtBattery/releases/latest";
+
+    readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+    volatile string pendingTag, pendingUrl, pendingError;
+    volatile bool done, busy, manual;
+
+    public string LatestTag { get; private set; }   // e.g. "v1.8.0", when newer than us
+    public string LatestUrl { get; private set; }
+    public event Action<string, string> Found;      // tag, url (new version found)
+    public event Action<string> ManualResult;       // message for a manual check
+
+    public static Version Current
+    {
+        get
+        {
+#if DEMO_OLD_VERSION
+            return new Version(1, 0, 0);
+#else
+            return typeof(UpdateChecker).Assembly.GetName().Version;
+#endif
+        }
+    }
+
+    public bool Enabled
+    {
+        get { return Settings.GetBool("UpdateCheck", true); }
+        set { Settings.SetBool("UpdateCheck", value); }
+    }
+
+    public UpdateChecker()
+    {
+        // Every few seconds: deliver a finished check; every so often: start a daily check.
+        timer.Interval = 2000;
+        int ticks = 0;
+        timer.Tick += delegate
+        {
+            if (done) Deliver();
+            // First automatic check ~20 s after start, then re-evaluated every 30 min.
+            if (++ticks == 10 || ticks % 900 == 0) MaybeCheck();
+        };
+        timer.Start();
+    }
+
+    void MaybeCheck()
+    {
+        if (!Enabled) return;
+        long last;
+        if (long.TryParse(Settings.GetString("LastUpdateCheck"), out last) &&
+            DateTime.UtcNow - new DateTime(last, DateTimeKind.Utc) < TimeSpan.FromHours(24)) return;
+        Start(false);
+    }
+
+    public void CheckNow() { Start(true); }
+
+    void Start(bool isManual)
+    {
+        if (busy) return;
+        busy = true; manual = isManual;
+        System.Threading.ThreadPool.QueueUserWorkItem(delegate
+        {
+            try
+            {
+                System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; // TLS 1.2
+                using (var wc = new System.Net.WebClient())
+                {
+                    wc.Headers.Add("User-Agent", "BtBattery-update-check");
+                    wc.Headers.Add("Accept", "application/vnd.github+json");
+                    string json = wc.DownloadString(Api);
+                    var tag = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
+                    var url = Regex.Match(json, "\"html_url\"\\s*:\\s*\"(https://github.com/[^\"]+/releases/tag/[^\"]+)\"");
+                    pendingTag = tag.Success ? tag.Groups[1].Value : null;
+                    pendingUrl = url.Success ? url.Groups[1].Value : ReleasesPage;
+                    pendingError = tag.Success ? null : "Couldn't read the latest release.";
+                }
+            }
+            catch (Exception ex) { pendingError = "Couldn't check for updates (" + ex.Message + ")."; }
+            done = true;
+        });
+    }
+
+    void Deliver()
+    {
+        done = false; busy = false;
+        if (pendingError != null)
+        {
+            if (manual && ManualResult != null) ManualResult(pendingError);
+            return;
+        }
+        Settings.SetString("LastUpdateCheck", DateTime.UtcNow.Ticks.ToString());
+        Version latest;
+        bool newer = Version.TryParse(pendingTag.TrimStart('v', 'V'), out latest) && latest > Current;
+        if (newer)
+        {
+            LatestTag = pendingTag; LatestUrl = pendingUrl;
+            // Notify once per new version (always when the user asked).
+            if (manual || Settings.GetString("NotifiedVersion") != pendingTag)
+            {
+                Settings.SetString("NotifiedVersion", pendingTag);
+                if (Found != null) Found(pendingTag, pendingUrl);
+            }
+        }
+        else if (manual && ManualResult != null)
+            ManualResult("You're up to date (v" + Current.ToString(3) + ").");
+    }
+
+    public void Dispose() { timer.Dispose(); }
 }
 
 // Hidden top-level window that hears WM_DEVICECHANGE, which Windows broadcasts when devices
@@ -467,7 +602,9 @@ class TaskbarStrip : NativeWindow, IDisposable
     readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     readonly System.Windows.Forms.Timer posTimer = new System.Windows.Forms.Timer();
     readonly ContextMenuStrip menu = new ToolMenu();
-    readonly ToolStripMenuItem startupItem, alertsItem, devicesItem, compactItem;
+    readonly ToolStripMenuItem startupItem, alertsItem, devicesItem, compactItem, updateItem, autoUpdateItem;
+    readonly ToolStripSeparator updateSeparator = new ToolStripSeparator();
+    readonly UpdateChecker updates = new UpdateChecker();
     readonly TipPopup tip = new TipPopup();
     readonly LowBatteryAlerts alerts = new LowBatteryAlerts();
     readonly DeviceChangeListener deviceListener = new DeviceChangeListener();
@@ -492,6 +629,16 @@ class TaskbarStrip : NativeWindow, IDisposable
         // Semibold strokes hold up much better than regular with grayscale anti-aliasing.
         textFont = FontExists("Segoe UI Semibold") ? "Segoe UI Semibold" : "Segoe UI";
 
+        // Shown at the top only when a newer release exists.
+        updateItem = new ToolStripMenuItem("Update available", null, delegate { OpenUrl(updates.LatestUrl ?? UpdateChecker.ReleasesPage); });
+        updateItem.Font = new Font(updateItem.Font, FontStyle.Bold);
+        updateItem.Visible = updateSeparator.Visible = false;
+        menu.Items.Add(updateItem);
+        menu.Items.Add(updateSeparator);
+        updates.Found += (tag, url) =>
+            alerts.Show("BtBattery " + tag + " is available", "Click to open the download page.", ToolTipIcon.Info, url);
+        updates.ManualResult += msg => alerts.Show("BtBattery", msg, ToolTipIcon.Info, null);
+
         menu.Items.Add("Refresh now", null, delegate { RefreshDevices(); });
         devicesItem = new ToolStripMenuItem("Devices");
         // The strip sits at the right of the screen: open submenus leftwards so they stay on
@@ -511,6 +658,14 @@ class TaskbarStrip : NativeWindow, IDisposable
         menu.Items.Add(startupItem);
         alertsItem = new ToolStripMenuItem("Low battery alerts", null, delegate { alerts.Enabled = !alerts.Enabled; });
         menu.Items.Add(alertsItem);
+        var updatesMenu = new ToolStripMenuItem("Updates");
+        updatesMenu.DropDownDirection = ToolStripDropDownDirection.Left;
+        updatesMenu.DropDownItems.Add("Check now", null, delegate { updates.CheckNow(); });
+        autoUpdateItem = new ToolStripMenuItem("Check automatically (daily)", null, delegate { updates.Enabled = !updates.Enabled; });
+        updatesMenu.DropDownItems.Add(autoUpdateItem);
+        updatesMenu.DropDownItems.Add("Open releases page", null, delegate { OpenUrl(UpdateChecker.ReleasesPage); });
+        updatesMenu.DropDownOpening += delegate { autoUpdateItem.Checked = updates.Enabled; };
+        menu.Items.Add(updatesMenu);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, delegate { Application.Exit(); });
         menu.Opening += delegate
@@ -518,6 +673,9 @@ class TaskbarStrip : NativeWindow, IDisposable
             startupItem.Checked = IsStartupEnabled();
             alertsItem.Checked = alerts.Enabled;
             compactItem.Checked = Settings.GetBool("Compact", false);
+            bool hasUpdate = updates.LatestTag != null;
+            updateItem.Visible = updateSeparator.Visible = hasUpdate;
+            if (hasUpdate) updateItem.Text = "Update available (" + updates.LatestTag + ")…";
         };
         devicesItem.DropDownOpening += delegate { BuildDevicesMenu(); };
 
@@ -955,9 +1113,11 @@ class TaskbarStrip : NativeWindow, IDisposable
         base.WndProc(ref m);
     }
 
-    static void OpenBluetoothSettings()
+    static void OpenBluetoothSettings() { OpenUrl("ms-settings:bluetooth"); }
+
+    static void OpenUrl(string url)
     {
-        try { System.Diagnostics.Process.Start("ms-settings:bluetooth"); } catch { }
+        try { System.Diagnostics.Process.Start(url); } catch { }
     }
 
     static bool IsStartupEnabled()
@@ -983,6 +1143,7 @@ class TaskbarStrip : NativeWindow, IDisposable
         deviceListener.Dispose();
         tip.Dispose();
         alerts.Dispose();
+        updates.Dispose();
         menu.Dispose();
         if (Handle != IntPtr.Zero) DestroyHandle();
     }
