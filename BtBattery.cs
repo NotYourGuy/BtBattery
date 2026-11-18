@@ -18,8 +18,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("BtBattery")]
 [assembly: System.Reflection.AssemblyDescription("Bluetooth battery levels on the Windows taskbar")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Lucian Vasile. MIT License.")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0")]
 
 static class Program
 {
@@ -311,6 +311,36 @@ class LowBatteryAlerts : IDisposable
     }
 }
 
+// Hidden top-level window that hears WM_DEVICECHANGE, which Windows broadcasts when devices
+// are added, removed or change state (e.g. a Bluetooth device connecting or disconnecting).
+// Child windows like the strip never get these broadcasts, hence this separate window.
+class DeviceChangeListener : NativeWindow, IDisposable
+{
+    const int WM_DEVICECHANGE = 0x219, DBT_DEVNODES_CHANGED = 0x7, DBT_DEVICEARRIVAL = 0x8000, DBT_DEVICEREMOVECOMPLETE = 0x8004;
+    public event EventHandler Changed;
+
+    public DeviceChangeListener()
+    {
+        var cp = new CreateParams();
+        cp.Caption = "BtBattery device listener";
+        cp.ExStyle = 0x80; // WS_EX_TOOLWINDOW: never on the taskbar
+        CreateHandle(cp);  // style 0 and never shown: an invisible top-level window
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_DEVICECHANGE)
+        {
+            int ev = m.WParam.ToInt32();
+            if ((ev == DBT_DEVNODES_CHANGED || ev == DBT_DEVICEARRIVAL || ev == DBT_DEVICEREMOVECOMPLETE) && Changed != null)
+                Changed(this, EventArgs.Empty);
+        }
+        base.WndProc(ref m);
+    }
+
+    public void Dispose() { if (Handle != IntPtr.Zero) DestroyHandle(); }
+}
+
 // Right-click menu. Shown without an owner form, a plain ContextMenuStrip gets its own
 // taskbar button (with a blank icon) while open; a tool window never does.
 class ToolMenu : ContextMenuStrip
@@ -419,6 +449,9 @@ class TaskbarStrip : NativeWindow, IDisposable
     readonly ToolStripMenuItem startupItem, alertsItem;
     readonly TipPopup tip = new TipPopup();
     readonly LowBatteryAlerts alerts = new LowBatteryAlerts();
+    readonly DeviceChangeListener deviceListener = new DeviceChangeListener();
+    readonly System.Windows.Forms.Timer changeTimer = new System.Windows.Forms.Timer();
+    int followUps; // extra refreshes after a device change, while Windows fills in battery info
     readonly string glyphFont, textFont;
 
     IntPtr taskbar = IntPtr.Zero;
@@ -454,6 +487,22 @@ class TaskbarStrip : NativeWindow, IDisposable
         refreshTimer.Tick += delegate { RefreshDevices(); };
         posTimer.Interval = 500;
         posTimer.Tick += delegate { KeepInPlace(); };
+
+        // A device change usually arrives as a burst of messages: wait for it to settle (1 s),
+        // refresh, then refresh twice more 4 s apart because the battery level can lag behind.
+        changeTimer.Tick += delegate
+        {
+            RefreshDevices();
+            if (--followUps <= 0) changeTimer.Stop();
+            else changeTimer.Interval = 4000;
+        };
+        deviceListener.Changed += delegate
+        {
+            followUps = 3;
+            changeTimer.Stop();
+            changeTimer.Interval = 1000;
+            changeTimer.Start();
+        };
 
         EnsureWindow();
         RefreshDevices();
@@ -784,6 +833,8 @@ class TaskbarStrip : NativeWindow, IDisposable
     {
         refreshTimer.Dispose();
         posTimer.Dispose();
+        changeTimer.Dispose();
+        deviceListener.Dispose();
         tip.Dispose();
         alerts.Dispose();
         menu.Dispose();

@@ -13,7 +13,7 @@
 ## Features
 
 - Shows every connected Bluetooth device that reports its battery, with an icon for its type.
-- Sits next to the system tray and grows or shrinks as devices connect and disconnect.
+- Sits next to the system tray and grows or shrinks the moment devices connect and disconnect.
 - Hover to see device names. Levels turn red at 20% or below.
 - Sends a Windows notification when a device drops to 20%, and again at 10%.
 - Matches the taskbar's light or dark theme and your display scaling.
@@ -36,7 +36,7 @@ Prefer to build from source? Download this repository, then double-click **`buil
 | Action | What it does |
 | --- | --- |
 | Hover | Shows each device's name and battery level |
-| Left-click | Checks the levels right away (they also update every 30 seconds) |
+| Left-click | Checks the levels right away (they also update every 30 seconds, and instantly when a device connects or disconnects) |
 | Right-click | **Refresh now**, **Start with Windows**, **Low battery alerts** (on/off), **Exit** |
 
 ## Good to know
