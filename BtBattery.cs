@@ -18,8 +18,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("BtBattery")]
 [assembly: System.Reflection.AssemblyDescription("Bluetooth battery levels on the Windows taskbar")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Lucian Vasile. MIT License.")]
-[assembly: System.Reflection.AssemblyVersion("1.5.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.0")]
 
 static class Program
 {
@@ -467,7 +467,7 @@ class TaskbarStrip : NativeWindow, IDisposable
     readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     readonly System.Windows.Forms.Timer posTimer = new System.Windows.Forms.Timer();
     readonly ContextMenuStrip menu = new ToolMenu();
-    readonly ToolStripMenuItem startupItem, alertsItem, devicesItem;
+    readonly ToolStripMenuItem startupItem, alertsItem, devicesItem, compactItem;
     readonly TipPopup tip = new TipPopup();
     readonly LowBatteryAlerts alerts = new LowBatteryAlerts();
     readonly DeviceChangeListener deviceListener = new DeviceChangeListener();
@@ -500,6 +500,12 @@ class TaskbarStrip : NativeWindow, IDisposable
         devicesItem.DropDownItems.Add("(none)"); // placeholder so the submenu arrow shows; rebuilt on open
         menu.Items.Add(devicesItem);
         menu.Items.Add("Bluetooth settings", null, delegate { OpenBluetoothSettings(); });
+        compactItem = new ToolStripMenuItem("Compact mode", null, delegate
+        {
+            Settings.SetBool("Compact", !Settings.GetBool("Compact", false));
+            Render();
+        });
+        menu.Items.Add(compactItem);
         menu.Items.Add(new ToolStripSeparator());
         startupItem = new ToolStripMenuItem("Start with Windows", null, delegate { ToggleStartup(); });
         menu.Items.Add(startupItem);
@@ -511,6 +517,7 @@ class TaskbarStrip : NativeWindow, IDisposable
         {
             startupItem.Checked = IsStartupEnabled();
             alertsItem.Checked = alerts.Enabled;
+            compactItem.Checked = Settings.GetBool("Compact", false);
         };
         devicesItem.DropDownOpening += delegate { BuildDevicesMenu(); };
 
@@ -751,7 +758,9 @@ class TaskbarStrip : NativeWindow, IDisposable
         height = Math.Max(1, height - (int)(8 * s)); // match the height of the taskbar's hover highlights
 
         Color fg = light ? Color.FromArgb(255, 0, 0, 0) : Color.FromArgb(255, 255, 255, 255);
-        Color low = light ? Color.FromArgb(255, 196, 43, 28) : Color.FromArgb(255, 255, 99, 71);
+        Color low = light ? Color.FromArgb(255, 157, 93, 0) : Color.FromArgb(255, 255, 185, 0);       // amber, <= 20%
+        Color critical = light ? Color.FromArgb(255, 196, 43, 28) : Color.FromArgb(255, 255, 99, 71); // red, <= 10%
+        bool compact = Settings.GetBool("Compact", false);
 
         // Whole-pixel sizes keep glyph stems on the pixel grid (sharper than fractional sizes).
         using (var gf = new Font(glyphFont, (float)Math.Round(20f * s), GraphicsUnit.Pixel))
@@ -761,16 +770,18 @@ class TaskbarStrip : NativeWindow, IDisposable
         {
             var fmt = StringFormat.GenericTypographic;
             fmt.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
-            int pad = (int)(10 * s), gap = (int)(6 * s), between = (int)(14 * s);
+            int pad = (int)(10 * s), gap = (int)(6 * s), between = (int)((compact ? 12 : 14) * s);
+            int barH = Math.Max(2, (int)Math.Round(3 * s)), barGap = Math.Max(1, (int)Math.Round(3 * s));
 
             // One continuous strip: [pad] glyph gap text [between] glyph gap text ... [pad]
+            // Compact mode drops the text and puts a small level bar under each glyph.
             var items = new List<BtDevice>(devices);
             var widths = new List<int>();
             int total = 2 * pad;
             foreach (var d in items)
             {
-                int w = (int)Math.Ceiling(mg.MeasureString(Glyph(d.Kind), gf, 1000, fmt).Width) + gap
-                        + (int)Math.Ceiling(mg.MeasureString(d.Battery + "%", tf, 1000, fmt).Width);
+                int w = (int)Math.Ceiling(mg.MeasureString(Glyph(d.Kind), gf, 1000, fmt).Width);
+                if (!compact) w += gap + (int)Math.Ceiling(mg.MeasureString(d.Battery + "%", tf, 1000, fmt).Width);
                 widths.Add(w);
                 total += w;
             }
@@ -805,17 +816,32 @@ class TaskbarStrip : NativeWindow, IDisposable
                     for (int i = 0; i < items.Count; i++)
                     {
                         var d = items[i];
-                        Color c = d.Battery <= 20 ? low : fg;
+                        Color c = d.Battery <= LowBatteryAlerts.Critical ? critical : d.Battery <= LowBatteryAlerts.Warn ? low : fg;
                         using (var brush = new SolidBrush(c))
                         {
                             string glyph = Glyph(d.Kind), text = d.Battery + "%";
                             SizeF gs = g.MeasureString(glyph, gf, 1000, fmt);
-                            SizeF ts = g.MeasureString(text, tf, 1000, fmt);
                             // Snap every position to a whole pixel; fractional offsets smear the anti-aliasing.
                             float gx = x;
-                            float tx = (float)Math.Round(gx + gs.Width + gap);
-                            g.DrawString(glyph, gf, brush, gx, (float)Math.Round((size.Height - gs.Height) / 2f), fmt);
-                            g.DrawString(text, tf, brush, tx, (float)Math.Round((size.Height - ts.Height) / 2f), fmt);
+                            if (compact)
+                            {
+                                // Glyph and bar centred together as one block.
+                                float block = gs.Height + barGap + barH;
+                                float gy = (float)Math.Round((size.Height - block) / 2f);
+                                g.DrawString(glyph, gf, brush, gx, gy, fmt);
+                                float by = (float)Math.Round(gy + gs.Height + barGap);
+                                int bw = widths[i];
+                                using (var track = new SolidBrush(Color.FromArgb(70, fg)))
+                                    g.FillRectangle(track, gx, by, bw, barH);
+                                g.FillRectangle(brush, gx, by, (float)Math.Max(1, Math.Round(bw * d.Battery / 100f)), barH);
+                            }
+                            else
+                            {
+                                SizeF ts = g.MeasureString(text, tf, 1000, fmt);
+                                float tx = (float)Math.Round(gx + gs.Width + gap);
+                                g.DrawString(glyph, gf, brush, gx, (float)Math.Round((size.Height - gs.Height) / 2f), fmt);
+                                g.DrawString(text, tf, brush, tx, (float)Math.Round((size.Height - ts.Height) / 2f), fmt);
+                            }
                         }
                         x += widths[i] + between;
                     }
