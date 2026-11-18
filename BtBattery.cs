@@ -18,8 +18,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("BtBattery")]
 [assembly: System.Reflection.AssemblyDescription("Bluetooth battery levels on the Windows taskbar")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Lucian Vasile. MIT License.")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.0")]
 
 static class Program
 {
@@ -247,6 +247,25 @@ static class Settings
         try { using (var k = Registry.CurrentUser.CreateSubKey(Key)) k.SetValue(name, value ? 1 : 0, RegistryValueKind.DWord); }
         catch { }
     }
+
+    public static List<string> GetList(string name)
+    {
+        try
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(Key))
+            {
+                var v = k == null ? null : k.GetValue(name) as string[];
+                return v == null ? new List<string>() : new List<string>(v);
+            }
+        }
+        catch { return new List<string>(); }
+    }
+
+    public static void SetList(string name, List<string> values)
+    {
+        try { using (var k = Registry.CurrentUser.CreateSubKey(Key)) k.SetValue(name, values.ToArray(), RegistryValueKind.MultiString); }
+        catch { }
+    }
 }
 
 // Low-battery alerts as Windows notifications. A tray icon is shown only while an alert is
@@ -426,6 +445,7 @@ class TaskbarStrip : NativeWindow, IDisposable
     [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
     [DllImport("user32.dll")] static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT e);
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
     [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
@@ -446,7 +466,7 @@ class TaskbarStrip : NativeWindow, IDisposable
     readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     readonly System.Windows.Forms.Timer posTimer = new System.Windows.Forms.Timer();
     readonly ContextMenuStrip menu = new ToolMenu();
-    readonly ToolStripMenuItem startupItem, alertsItem;
+    readonly ToolStripMenuItem startupItem, alertsItem, devicesItem;
     readonly TipPopup tip = new TipPopup();
     readonly LowBatteryAlerts alerts = new LowBatteryAlerts();
     readonly DeviceChangeListener deviceListener = new DeviceChangeListener();
@@ -456,7 +476,8 @@ class TaskbarStrip : NativeWindow, IDisposable
 
     IntPtr taskbar = IntPtr.Zero;
     bool childMode;
-    List<BtDevice> devices = new List<BtDevice>();
+    List<BtDevice> allDevices = new List<BtDevice>(); // every connected device, in the user's order
+    List<BtDevice> devices = new List<BtDevice>();    // the ones shown on the strip
     bool hovered;
     bool tracking;
     Size size = new Size(1, 1);
@@ -471,6 +492,13 @@ class TaskbarStrip : NativeWindow, IDisposable
         textFont = FontExists("Segoe UI Semibold") ? "Segoe UI Semibold" : "Segoe UI";
 
         menu.Items.Add("Refresh now", null, delegate { RefreshDevices(); });
+        devicesItem = new ToolStripMenuItem("Devices");
+        // The strip sits at the right of the screen: open submenus leftwards so they stay on
+        // this monitor instead of spilling onto a second monitor to the right.
+        devicesItem.DropDownDirection = ToolStripDropDownDirection.Left;
+        devicesItem.DropDownItems.Add("(none)"); // placeholder so the submenu arrow shows; rebuilt on open
+        menu.Items.Add(devicesItem);
+        menu.Items.Add(new ToolStripSeparator());
         startupItem = new ToolStripMenuItem("Start with Windows", null, delegate { ToggleStartup(); });
         menu.Items.Add(startupItem);
         alertsItem = new ToolStripMenuItem("Low battery alerts", null, delegate { alerts.Enabled = !alerts.Enabled; });
@@ -482,6 +510,7 @@ class TaskbarStrip : NativeWindow, IDisposable
             startupItem.Checked = IsStartupEnabled();
             alertsItem.Checked = alerts.Enabled;
         };
+        devicesItem.DropDownOpening += delegate { BuildDevicesMenu(); };
 
         refreshTimer.Interval = 30000;
         refreshTimer.Tick += delegate { RefreshDevices(); };
@@ -549,11 +578,85 @@ class TaskbarStrip : NativeWindow, IDisposable
 
     void RefreshDevices()
     {
-        try { devices = Bluetooth.GetConnectedDevices(); }
-        catch { devices = new List<BtDevice>(); }
+        try { allDevices = Bluetooth.GetConnectedDevices(); }
+        catch { allDevices = new List<BtDevice>(); }
+        ApplyPreferences();
         Render();
         if (hovered) ShowTip();
         alerts.Check(devices);
+    }
+
+    // Sort by the saved order (unknown devices go last, by name) and drop hidden devices.
+    void ApplyPreferences()
+    {
+        var order = Settings.GetList("Order");
+        var hidden = new HashSet<string>(Settings.GetList("Hidden"), StringComparer.OrdinalIgnoreCase);
+        allDevices.Sort((a, b) =>
+        {
+            int ia = order.FindIndex(n => string.Equals(n, a.Name, StringComparison.OrdinalIgnoreCase));
+            int ib = order.FindIndex(n => string.Equals(n, b.Name, StringComparison.OrdinalIgnoreCase));
+            if (ia < 0) ia = int.MaxValue;
+            if (ib < 0) ib = int.MaxValue;
+            return ia != ib ? ia.CompareTo(ib) : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+        });
+        devices = allDevices.FindAll(d => !hidden.Contains(d.Name));
+    }
+
+    void BuildDevicesMenu()
+    {
+        var old = new List<ToolStripItem>();
+        foreach (ToolStripItem it in devicesItem.DropDownItems) old.Add(it);
+        devicesItem.DropDownItems.Clear();
+        foreach (var it in old) it.Dispose();
+        if (allDevices.Count == 0)
+        {
+            devicesItem.DropDownItems.Add(new ToolStripMenuItem("No devices connected") { Enabled = false });
+            return;
+        }
+        var hidden = new HashSet<string>(Settings.GetList("Hidden"), StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < allDevices.Count; i++)
+        {
+            var d = allDevices[i];
+            string name = d.Name;
+            var item = new ToolStripMenuItem(name + "   " + d.Battery + "%");
+            item.Checked = !hidden.Contains(name);
+
+            var show = new ToolStripMenuItem("Show on taskbar", null, delegate { ToggleHidden(name); });
+            show.Checked = item.Checked;
+            var left = new ToolStripMenuItem("Move left", null, delegate { Move(name, -1); });
+            left.Enabled = i > 0;
+            var right = new ToolStripMenuItem("Move right", null, delegate { Move(name, +1); });
+            right.Enabled = i < allDevices.Count - 1;
+            item.DropDownItems.AddRange(new ToolStripItem[] { show, left, right });
+            item.DropDownDirection = ToolStripDropDownDirection.Left;
+            devicesItem.DropDownItems.Add(item);
+        }
+    }
+
+    void ToggleHidden(string name)
+    {
+        var hidden = Settings.GetList("Hidden");
+        int i = hidden.FindIndex(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        if (i >= 0) hidden.RemoveAt(i); else hidden.Add(name);
+        Settings.SetList("Hidden", hidden);
+        ApplyPreferences();
+        Render();
+    }
+
+    void Move(string name, int delta)
+    {
+        var names = allDevices.ConvertAll(d => d.Name);
+        int i = names.FindIndex(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        int j = i + delta;
+        if (i < 0 || j < 0 || j >= names.Count) return;
+        names[i] = names[j];
+        names[j] = name;
+        // Keep the saved position of devices that aren't connected right now.
+        foreach (var n in Settings.GetList("Order"))
+            if (!names.Exists(x => string.Equals(x, n, StringComparison.OrdinalIgnoreCase))) names.Add(n);
+        Settings.SetList("Order", names);
+        ApplyPreferences();
+        Render();
     }
 
     void KeepInPlace()
@@ -757,7 +860,9 @@ class TaskbarStrip : NativeWindow, IDisposable
 
     string TipText()
     {
-        if (devices.Count == 0) return "No connected Bluetooth devices with battery info";
+        if (devices.Count == 0)
+            return allDevices.Count > 0 ? "All devices are hidden (right-click → Devices)"
+                                        : "No connected Bluetooth devices with battery info";
         var sb = new StringBuilder();
         foreach (var d in devices)
         {
@@ -808,6 +913,9 @@ class TaskbarStrip : NativeWindow, IDisposable
                 break;
             case WM_RBUTTONUP:
                 tip.Hide();
+                // A popup menu only behaves (submenus open on hover, clicking elsewhere closes it)
+                // when its app is in the foreground, so activate our hidden window first.
+                SetForegroundWindow(deviceListener.Handle);
                 menu.Show(Cursor.Position);
                 return;
         }
