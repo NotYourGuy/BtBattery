@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Simplified, heavier version of icon.svg for 16-32 px. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2F8CFF"/>
+      <stop offset="1" stop-color="#0A5BD6"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
+  <rect x="14" y="32" width="88" height="64" rx="12" fill="none" stroke="#fff" stroke-width="12"/>
+  <rect x="106" y="50" width="12" height="28" rx="4" fill="#fff"/>
+  <path d="M48.5 54.5 L67.5 73.5 L58 83 L58 45 L67.5 54.5 L48.5 73.5"
+        fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -217,6 +217,22 @@ static class Bluetooth
     }
 }
 
+// Right-click menu. Shown without an owner form, a plain ContextMenuStrip gets its own
+// taskbar button (with a blank icon) while open; a tool window never does.
+class ToolMenu : ContextMenuStrip
+{
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= 0x80;       // WS_EX_TOOLWINDOW
+            cp.ExStyle &= ~0x40000;   // no WS_EX_APPWINDOW
+            return cp;
+        }
+    }
+}
+
 // Small tooltip popup shown above the taskbar (WinForms' ToolTip can't attach to a raw window).
 class TipPopup : Form
 {
@@ -305,7 +321,7 @@ class TaskbarStrip : NativeWindow, IDisposable
 
     readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     readonly System.Windows.Forms.Timer posTimer = new System.Windows.Forms.Timer();
-    readonly ContextMenuStrip menu = new ContextMenuStrip();
+    readonly ContextMenuStrip menu = new ToolMenu();
     readonly ToolStripMenuItem startupItem;
     readonly TipPopup tip = new TipPopup();
     readonly string glyphFont, textFont;
