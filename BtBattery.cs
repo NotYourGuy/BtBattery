@@ -18,8 +18,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("BtBattery")]
 [assembly: System.Reflection.AssemblyDescription("Bluetooth battery levels on the Windows taskbar")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Lucian Vasile. MIT License.")]
-[assembly: System.Reflection.AssemblyVersion("1.4.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.0")]
 
 static class Program
 {
@@ -457,6 +457,7 @@ class TaskbarStrip : NativeWindow, IDisposable
     const int ULW_ALPHA = 2;
     const int WM_MOUSEMOVE = 0x200, WM_LBUTTONUP = 0x202, WM_RBUTTONUP = 0x205, WM_MOUSELEAVE = 0x2A3, WM_MOUSEACTIVATE = 0x21;
     const int MA_NOACTIVATE = 3, TME_LEAVE = 2;
+    const int WM_LBUTTONDBLCLK = 0x203, CS_DBLCLKS = 0x8;
     static readonly IntPtr HWND_TOP = IntPtr.Zero, HWND_TOPMOST = new IntPtr(-1);
     #endregion
 
@@ -498,6 +499,7 @@ class TaskbarStrip : NativeWindow, IDisposable
         devicesItem.DropDownDirection = ToolStripDropDownDirection.Left;
         devicesItem.DropDownItems.Add("(none)"); // placeholder so the submenu arrow shows; rebuilt on open
         menu.Items.Add(devicesItem);
+        menu.Items.Add("Bluetooth settings", null, delegate { OpenBluetoothSettings(); });
         menu.Items.Add(new ToolStripSeparator());
         startupItem = new ToolStripMenuItem("Start with Windows", null, delegate { ToggleStartup(); });
         menu.Items.Add(startupItem);
@@ -556,6 +558,7 @@ class TaskbarStrip : NativeWindow, IDisposable
         var cp = new CreateParams();
         cp.Caption = "BtBattery";
         cp.ExStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        cp.ClassStyle = CS_DBLCLKS; // deliver double-clicks
         cp.Width = 1; cp.Height = 1;
         childMode = false;
         if (taskbar != IntPtr.Zero)
@@ -911,6 +914,10 @@ class TaskbarStrip : NativeWindow, IDisposable
             case WM_LBUTTONUP:
                 RefreshDevices();
                 break;
+            case WM_LBUTTONDBLCLK:
+                tip.Hide();
+                OpenBluetoothSettings();
+                break;
             case WM_RBUTTONUP:
                 tip.Hide();
                 // A popup menu only behaves (submenus open on hover, clicking elsewhere closes it)
@@ -920,6 +927,11 @@ class TaskbarStrip : NativeWindow, IDisposable
                 return;
         }
         base.WndProc(ref m);
+    }
+
+    static void OpenBluetoothSettings()
+    {
+        try { System.Diagnostics.Process.Start("ms-settings:bluetooth"); } catch { }
     }
 
     static bool IsStartupEnabled()

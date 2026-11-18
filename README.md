@@ -38,7 +38,8 @@ Prefer to build from source? Download this repository, then double-click **`buil
 | --- | --- |
 | Hover | Shows each device's name and battery level |
 | Left-click | Checks the levels right away (they also update every 30 seconds, and instantly when a device connects or disconnects) |
-| Right-click | **Refresh now**, **Devices** (show/hide and reorder each device), **Start with Windows**, **Low battery alerts** (on/off), **Exit** |
+| Double-click | Opens **Settings → Bluetooth & devices** |
+| Right-click | **Refresh now**, **Devices** (show/hide and reorder each device), **Bluetooth settings**, **Start with Windows**, **Low battery alerts** (on/off), **Exit** |
 
 ## Good to know
 
